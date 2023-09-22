@@ -5,16 +5,19 @@
 // request cancellation + if the response from the refresh endpoint is 401, then cancel all requests with auth token
 
 
-import ky, { KyResponse, type Options } from "ky";
+import ky, { HTTPError, KyResponse, type Options } from "ky";
 import { milliseconds, REFRESH_TOKEN_HEADER } from "./constants.js";
 import { Queue, QueueAction } from "./queue.js";
 import { RefreshTokenResponse } from "./tests/contracts.js";
-import { TestLogger } from "./tests/logger.js";
+import { z } from "zod";
 
 type Input = string | URL | Request;
-type RequestMethod = "GET" | "POST" | "PUT" | "PATCH" | "HEAD" | "DELETE" | "OPTIONS" | "TRACE";
+const requestMethods = ["GET", "POST", "PUT", "PATCH", "HEAD", "DELETE"] as const;
+const requestMethodSchema = z.enum(requestMethods);
+type RequestMethod = typeof requestMethods[number];
 
-export type HttpClientRequest = {
+export type HttpClientQueueItem = {
+	id: `${string}-${string}-${string}-${string}-${string}`,
 	method: RequestMethod;
 	url: Input;
 	options?: Options,
@@ -35,21 +38,45 @@ export interface Storage {
 }
 
 export class HttpClient {
-	private queue: Queue<HttpClientRequest>;
+	readonly #queue: Queue<HttpClientQueueItem>;
+	#status: "idle" | "running" | "stopped";
+
+	private requestMap: Map<string, HttpClientQueueItem>;
 	private readonly api: typeof ky;
 	private storage: Storage;
-	private isExecuting = false;
 
-	constructor(storage: Storage, queue: Queue<HttpClientRequest>, options?: Options) {
+	constructor(storage: Storage, options?: Options) {
 		this.storage = storage;
-		this.queue = queue;
-		this.api = ky.create(options ?? {});
-		this.queue.subscribe(this.subscriber.bind(this));
+		this.#queue = new Queue<HttpClientQueueItem>();
+		this.requestMap = new Map<string, HttpClientQueueItem>(); // TODO: don't forget cleanup
+		this.#status = "idle";
+		this.api = ky.create({
+			hooks: {
+				beforeError: [this.errorHook.bind(this)],
+			}
+		});
+		this.#queue.subscribe(this.subscriber.bind(this));
+	}
+
+	public get status() {
+		return this.#status;
+	}
+
+	private set status(value: "idle" | "running" | "stopped") {
+		this.#status = value;
+		if (value === "idle" && !this.#queue.isEmpty()) {
+			void this.run();
+		}
+	}
+
+	public subscribeToQueue(callback: (action: QueueAction<HttpClientQueueItem>) => void): () => void {
+		return this.#queue.subscribe(callback);
 	}
 
 	public async get<T>(url: Input, options?: Options): Promise<T> {
 		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.queue.push({
+			this.#queue.enqueue({
+				id: window.crypto.randomUUID(),
 				method: "GET",
 				url,
 				options,
@@ -64,7 +91,8 @@ export class HttpClient {
 
 	public async post<T>(url: Input, options?: Options): Promise<T> {
 		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.queue.push({
+			this.#queue.enqueue({
+				id: window.crypto.randomUUID(),
 				method: "POST",
 				url,
 				options,
@@ -79,7 +107,8 @@ export class HttpClient {
 
 	public async put<T>(url: Input, options?: Options): Promise<T> {
 		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.queue.push({
+			this.#queue.enqueue({
+				id: window.crypto.randomUUID(),
 				method: "PUT",
 				url,
 				options,
@@ -94,7 +123,8 @@ export class HttpClient {
 
 	public async patch<T>(url: Input, options?: Options): Promise<T> {
 		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.queue.push({
+			this.#queue.enqueue({
+				id: window.crypto.randomUUID(),
 				method: "PATCH",
 				url,
 				options,
@@ -109,7 +139,8 @@ export class HttpClient {
 
 	public async delete<T>(url: Input, options?: Options): Promise<T> {
 		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.queue.push({
+			this.#queue.enqueue({
+				id: window.crypto.randomUUID(),
 				method: "DELETE",
 				url,
 				options,
@@ -123,9 +154,12 @@ export class HttpClient {
 	}
 
 	public request(url: Input, options?: Options): Promise<KyResponse> {
+		const method = requestMethodSchema.parse(options?.method);
+
 		return new Promise((resolve, reject) => {
-			this.queue.push({
-				method: "GET",
+			this.#queue.enqueue({
+				id: window.crypto.randomUUID(),
+				method,
 				url,
 				options,
 				resolve,
@@ -134,38 +168,70 @@ export class HttpClient {
 		});
 	}
 
-
-	private subscriber(action: QueueAction<HttpClientRequest>) {
-		if (this.isExecuting || action.type !== "push") {
-			return;
+	private async errorHook(error: HTTPError): Promise<HTTPError> {
+		if (error.response.status !== 401) {
+			return error;
 		}
 
-		this.isExecuting = true;
-		void this.run();
+		if (this.storage.refreshToken == null) {
+			return error;
+		}
+
+		const id = error.request.headers.get("x-request-id");
+
+		if (id == null) {
+			return error;
+		}
+
+		const item = this.requestMap.get(id);
+
+		if (item == null) {
+			return error;
+		}
+
+		this.status = "stopped";
+		await this.refreshToken();
+		this.#queue.enqueue(item);
+		this.status = "idle";
+
+		return error;
 	}
 
+
 	private async run() {
-		while (!this.queue.isEmpty()) {
-			const item = this.queue.pop();
+		while (!this.#queue.isEmpty()) {
+			const item = this.#queue.dequeue();
 
 			if (item == null) {
-				return;
+				continue;
 			}
 
-			const hasAccessToken = this.storage.accessToken != null;
-			if (hasAccessToken && this.shouldRefreshToken()) {
+			this.requestMap.set(item.id, item);
+			const hasRefreshToken = this.storage.refreshToken != null;
+			if (hasRefreshToken && this.shouldRefreshAccessToken()) {
 				await this.refreshToken();
 			}
 
 			this.executeRequest(item).then(item.resolve, item.reject);
 		}
-		this.isExecuting = false;
+		this.status = "idle";
 	}
 
-	private executeRequest(item: HttpClientRequest) {
-		const {method, options, url} = item;
+	private subscriber(action: QueueAction<HttpClientQueueItem>) {
+		if (this.status !== "idle" || action.type !== "push") {
+			return;
+		}
 
-		const headers = this.constructHeaders(this.getAuthHeaders());
+		this.status = "running";
+		void this.run();
+	}
+
+	private executeRequest(item: HttpClientQueueItem) {
+		const {id, method, options, url} = item;
+
+		const initialHeaders = this.getAuthHeaders();
+		initialHeaders.set("x-request-id", id);
+		const headers = this.constructHeaders(initialHeaders, options?.headers);
 
 
 		return this.api(url, {
@@ -182,6 +248,13 @@ export class HttpClient {
 		const response = await this.api.post(url, {
 			headers
 		});
+
+		if (!response.ok) {
+			console.log("logout");
+			this.storage.accessToken = null;
+			this.storage.refreshToken = null;
+			return;
+		}
 
 		const data = await response.json<RefreshTokenResponse>();
 
@@ -225,7 +298,10 @@ export class HttpClient {
 		return headers;
 	}
 
-	private shouldRefreshToken() {
+	private shouldRefreshAccessToken() {
+		if (this.storage.refreshToken == null) {
+			return false;
+		}
 		const expiration = (this.storage.getTokenExpiration() ?? 0) * milliseconds.second;
 		const buffer = 10 * milliseconds.second;
 		const now = Date.now();

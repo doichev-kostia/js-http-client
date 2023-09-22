@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { HttpClient, HttpClientRequest } from "./http-client.js";
+import { HttpClient, HttpClientQueueItem } from "./http-client.js";
 import { db } from "./tests/db.js";
 import { Storage } from "./tests/storage.js";
 import { Queue } from "./queue.js";
@@ -40,9 +40,8 @@ describe("HttpClient", () => {
 
 	it("should be able to make a simple request", async () => {
 		const storage = new Storage();
-		const queue = new Queue<HttpClientRequest>();
 
-		const client = new HttpClient(storage, queue, clientOptions);
+		const client = new HttpClient(storage, clientOptions);
 
 		const response = await client.post<{ id: string }>("users", {
 			json: {
@@ -55,9 +54,8 @@ describe("HttpClient", () => {
 
 	it("should make a request with auth token", async () => {
 		const storage = new Storage();
-		const queue = new Queue<HttpClientRequest>();
 
-		const client = new HttpClient(storage, queue, clientOptions);
+		const client = new HttpClient(storage, clientOptions);
 
 		const response = await client.post<LoginResponse>("authentication/login", {
 			json: {
@@ -78,9 +76,8 @@ describe("HttpClient", () => {
 
 	it("should refresh the token in case it's expired", async () => {
 		const storage = new Storage();
-		const queue = new Queue<HttpClientRequest>();
 
-		const client = new HttpClient(storage, queue, clientOptions);
+		const client = new HttpClient(storage, clientOptions);
 
 		const response = await client.post<LoginResponse>("authentication/login", {
 			json: {
@@ -112,9 +109,8 @@ describe("HttpClient", () => {
 
 	it("should be able to make multiple requests", async () => {
 		const storage = new Storage();
-		const queue = new Queue<HttpClientRequest>();
 
-		const client = new HttpClient(storage, queue, clientOptions);
+		const client = new HttpClient(storage, clientOptions);
 
 		const response = await client.post<LoginResponse>("authentication/login", {
 			json: {
@@ -136,7 +132,7 @@ describe("HttpClient", () => {
 			);
 		});
 
-		queue.subscribe((action) => {
+		client.subscribeToQueue((action) => {
 			if (action.type !== "pop") {
 				return;
 			}

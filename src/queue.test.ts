@@ -7,11 +7,11 @@ describe("Queue", () => {
 		const num = 42;
 
 		expect(queue.isEmpty()).toBe(true);
-		queue.push(num);
+		queue.enqueue(num);
 		expect(queue.isEmpty()).toBe(false);
 		expect(queue.size).toBe(1);
 		expect(queue.peek()).toBe(num);
-		expect(queue.pop()).toBe(num);
+		expect(queue.dequeue()).toBe(num);
 		expect(queue.isEmpty()).toBe(true);
 		expect(queue.size).toBe(0);
 		expect(queue.peek()).toBe(null);
@@ -21,7 +21,7 @@ describe("Queue", () => {
 		const queue = new Queue<number>();
 		const num = 42;
 
-		queue.push(num);
+		queue.enqueue(num);
 		queue.clear();
 		expect(queue.isEmpty()).toBe(true);
 		expect(queue.size).toBe(0);
@@ -37,8 +37,8 @@ describe("Queue", () => {
 			events.push(event.type);
 		});
 
-		queue.push(num);
-		queue.pop();
+		queue.enqueue(num);
+		queue.dequeue();
 		queue.clear();
 
 		expect(events).toEqual(["push", "pop", "clear"]);
