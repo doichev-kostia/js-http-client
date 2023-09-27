@@ -1,15 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { HttpClient, HttpClientQueueItem } from "./http-client.js";
+import { HttpClient } from "./http-client.js";
 import { db } from "./tests/db.js";
 import { Storage } from "./tests/storage.js";
-import { Queue } from "./queue.js";
 import { server } from "./mocks/server.js";
 import { CreateUser, LoginResponse, User } from "./tests/contracts.js";
 import { BASE_URL } from "./constants.js";
 import { Options } from "ky";
 import { createAccessToken } from "./tests/util.js";
-import { getUrl, refreshToken } from "./mocks/handlers.js";
+import { getCurrentUser, getUrl, refreshToken } from "./mocks/handlers.js";
 import { rest } from "msw";
 
 const testUser = {
@@ -43,13 +42,16 @@ describe("HttpClient", () => {
 
 		const client = new HttpClient(storage, clientOptions);
 
-		const response = await client.post<{ id: string }>("users", {
+		const response = await client.post("users", {
 			json: {
 				name: "test 123",
 				email: "test123@gmail.com",
 			} satisfies CreateUser
 		});
-		expect(response.id).toBeDefined();
+
+		const data = await response.json<{ id: string }>();
+
+		expect(data.id).toBeDefined();
 	});
 
 	it("should make a request with auth token", async () => {
@@ -57,19 +59,22 @@ describe("HttpClient", () => {
 
 		const client = new HttpClient(storage, clientOptions);
 
-		const response = await client.post<LoginResponse>("authentication/login", {
+		const response = await client.post("authentication/login", {
 			json: {
 				email: testUser.email,
 			}
 		});
 
-		expect(response.token).toBeDefined();
-		expect(response.refreshToken).toBeDefined();
+		const data = await response.json<LoginResponse>();
 
-		storage.accessToken = response.token;
-		storage.refreshToken = response.refreshToken;
+		expect(data.token).toBeDefined();
+		expect(data.refreshToken).toBeDefined();
 
-		const user = await client.get<User>("users/me");
+		storage.accessToken = data.token;
+		storage.refreshToken = data.refreshToken;
+
+		const userResponse = await client.get("users/me");
+		const user = await userResponse.json<User>();
 
 		expect(user.id).toBe(testUser.id);
 	});
@@ -79,15 +84,17 @@ describe("HttpClient", () => {
 
 		const client = new HttpClient(storage, clientOptions);
 
-		const response = await client.post<LoginResponse>("authentication/login", {
+		const response = await client.post("authentication/login", {
 			json: {
 				email: testUser.email,
 			}
 		});
 
+		const data = await response.json<LoginResponse>();
+
 		const expiredToken = createAccessToken({userId: testUser.id}, 0);
 
-		storage.refreshToken = response.refreshToken;
+		storage.refreshToken = data.refreshToken;
 		storage.accessToken = expiredToken;
 
 		const promise = new Promise((resolve, reject) => {
@@ -99,7 +106,7 @@ describe("HttpClient", () => {
 			);
 		});
 
-		await client.get<User>("users/me");
+		await client.get("users/me");
 
 		const res = await promise;
 		expect(res).toBe(true);
@@ -112,16 +119,18 @@ describe("HttpClient", () => {
 
 		const client = new HttpClient(storage, clientOptions);
 
-		const response = await client.post<LoginResponse>("authentication/login", {
+		const response = await client.post("authentication/login", {
 			json: {
 				email: testUser.email,
 			}
 		});
 
+		const data = await response.json<LoginResponse>();
+
 		const expiredToken = createAccessToken({userId: testUser.id}, 0);
 
-		storage.refreshToken = response.refreshToken;
-		storage.accessToken = response.token;
+		storage.refreshToken = data.refreshToken;
+		storage.accessToken = data.token;
 
 		const promise = new Promise((resolve, reject) => {
 			server.use(
@@ -157,18 +166,18 @@ describe("HttpClient", () => {
 
 
 		const requests = [
-			client.get<User>("users/me", {
+			client.get("users/me", {
 				headers: {
 					"x-order": "1"
 				},
 			}),
-			client.get<User>("users/me", {
+			client.get("users/me", {
 					headers: {
 						"x-order": "2"
 					},
 				},
 			),
-			client.get<User>("users/me", {
+			client.get("users/me", {
 				headers: {
 					"x-order": "3",
 				}
@@ -180,5 +189,47 @@ describe("HttpClient", () => {
 		expect(storage.accessToken).not.toBe(expiredToken);
 		await expect(promise).resolves.toBe(true);
 	});
+
+	it("should handle errors", async () => {
+		const storage = new Storage();
+
+		const client = new HttpClient(storage, clientOptions);
+		const counter = {
+			count: 0,
+		}
+
+		server.use(rest.get(getUrl("/api/users/me"), (req, res, ctx) => {
+			counter.count += 1;
+			if (counter.count === 1) {
+				return res(ctx.status(401));
+			} else {
+				return getCurrentUser(req, res, ctx);
+			}
+		}));
+
+		const response = await client.post("authentication/login", {
+			json: {
+				email: testUser.email,
+			}
+		});
+
+		const data = await response.json<LoginResponse>();
+
+		storage.accessToken = data.token;
+		storage.refreshToken = data.refreshToken;
+
+		const userResponse = await client.get("users/me");
+
+		expect(userResponse.ok).toBe(true);
+	});
+
+	it("should throw an error if the token is invalid", async () => {
+		const storage = new Storage();
+
+		const client = new HttpClient(storage, clientOptions);
+
+		expect(client.get("users/me")).rejects.toThrowError();
+	});
+
 });
 
