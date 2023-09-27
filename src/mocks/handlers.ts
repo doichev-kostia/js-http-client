@@ -241,6 +241,19 @@ export async function refreshToken(req: RestRequest, res: ResponseComposition, c
 
 }
 
+export async function logout(req: RestRequest, res: ResponseComposition, ctx: RestContext) {
+	const refreshToken = req.headers.get(REFRESH_TOKEN_HEADER);
+
+	if (refreshToken) {
+		await db.deleteFrom("tokens").where("value", "=", refreshToken).execute();
+	}
+
+
+	return res(
+		ctx.status(204)
+	);
+}
+
 export const handlers = [
 	rest.get(getUrl("/api/users"), getUsers),
 	rest.post(getUrl("/api/users"), createUser),
@@ -249,5 +262,6 @@ export const handlers = [
 	rest.put(getUrl("/api/users/:id"), updateUser),
 	rest.delete(getUrl("/api/users/:id"), deleteUser),
 	rest.post(getUrl("/api/authentication/login"), login),
+	rest.post(getUrl("/api/authentication/logout"), logout),
 	rest.post(getUrl("/api/tokens/refresh"), refreshToken)
 ];

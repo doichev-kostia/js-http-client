@@ -8,7 +8,7 @@ import { CreateUser, LoginResponse, User } from "./tests/contracts.js";
 import { BASE_URL } from "./constants.js";
 import { Options } from "ky";
 import { createAccessToken } from "./tests/util.js";
-import { getCurrentUser, getUrl, refreshToken } from "./mocks/handlers.js";
+import { getCurrentUser, getUrl, logout, refreshToken } from "./mocks/handlers.js";
 import { rest } from "msw";
 
 const testUser = {
@@ -196,7 +196,7 @@ describe("HttpClient", () => {
 		const client = new HttpClient(storage, clientOptions);
 		const counter = {
 			count: 0,
-		}
+		};
 
 		server.use(rest.get(getUrl("/api/users/me"), (req, res, ctx) => {
 			counter.count += 1;
@@ -229,6 +229,40 @@ describe("HttpClient", () => {
 		const client = new HttpClient(storage, clientOptions);
 
 		await expect(client.get("users/me")).rejects.toThrowError();
+	});
+
+	it("should logout in case the token is invalid", async () => {
+		server.use(rest.get(getUrl("/api/users/me"), (req, res, ctx) => {
+			return res(ctx.status(401));
+		}), rest.post(getUrl("/api/tokens/refresh"), (req, res, ctx) => {
+			return res(ctx.status(401));
+		}));
+
+		const storage = new Storage();
+
+		const client = new HttpClient(storage, clientOptions);
+
+		const response = await client.post("authentication/login", {
+			json: {
+				email: testUser.email,
+			}
+		});
+
+		const data = await response.json<LoginResponse>();
+
+		storage.accessToken = data.token;
+		storage.refreshToken = data.refreshToken;
+
+		const promise = new Promise((resolve, reject) => {
+			server.use(rest.post(getUrl("/api/authentication/logout"), (req, res, ctx) => {
+				resolve(true);
+				return logout(req, res, ctx);
+			}))
+		})
+
+		await expect(client.get("users/me")).rejects.toThrowError();
+
+		expect(await promise).toBe(true);
 	});
 
 });
