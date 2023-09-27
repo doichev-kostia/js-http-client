@@ -5,11 +5,12 @@
 // request cancellation + if the response from the refresh endpoint is 401, then cancel all requests with auth token
 
 
-import ky, { HTTPError, KyResponse, type Options } from "ky";
+import ky, { KyResponse, type NormalizedOptions, type Options } from "ky";
 import { milliseconds, REFRESH_TOKEN_HEADER } from "./constants.js";
 import { Queue, QueueAction } from "./queue.js";
 import { RefreshTokenResponse } from "./tests/contracts.js";
 import { z } from "zod";
+import { randomUUID } from "./crypto.js";
 
 type Input = string | URL | Request;
 const requestMethods = ["GET", "POST", "PUT", "PATCH", "HEAD", "DELETE"] as const;
@@ -48,12 +49,13 @@ export class HttpClient {
 	constructor(storage: Storage, options?: Options) {
 		this.storage = storage;
 		this.#queue = new Queue<HttpClientQueueItem>();
-		this.requestMap = new Map<string, HttpClientQueueItem>(); // TODO: don't forget cleanup
+		this.requestMap = new Map<string, HttpClientQueueItem>();
 		this.#status = "idle";
 		this.api = ky.create({
 			hooks: {
-				beforeError: [this.errorHook.bind(this)],
-			}
+				afterResponse: [this.responseHook.bind(this)],
+			},
+			...options,
 		});
 		this.#queue.subscribe(this.subscriber.bind(this));
 	}
@@ -73,130 +75,86 @@ export class HttpClient {
 		return this.#queue.subscribe(callback);
 	}
 
-	public async get<T>(url: Input, options?: Options): Promise<T> {
-		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.#queue.enqueue({
-				id: window.crypto.randomUUID(),
-				method: "GET",
-				url,
-				options,
-				resolve,
-				reject,
-			});
-		});
+	public async get(url: Input, options?: Options): Promise<KyResponse> {
+		const response = await this.enqueue("GET", url, options);
 
-		const data = await response.json<T>();
-		return data;
+		return response;
 	}
 
-	public async post<T>(url: Input, options?: Options): Promise<T> {
-		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.#queue.enqueue({
-				id: window.crypto.randomUUID(),
-				method: "POST",
-				url,
-				options,
-				resolve,
-				reject,
-			});
-		});
+	public async post(url: Input, options?: Options): Promise<KyResponse> {
+		const response = await this.enqueue("POST", url, options);
 
-		const data = await response.json<T>();
-		return data;
+		return response;
 	}
 
-	public async put<T>(url: Input, options?: Options): Promise<T> {
-		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.#queue.enqueue({
-				id: window.crypto.randomUUID(),
-				method: "PUT",
-				url,
-				options,
-				resolve,
-				reject,
-			});
-		});
+	public async put(url: Input, options?: Options): Promise<KyResponse> {
+		const response = await this.enqueue("PUT", url, options);
 
-		const data = await response.json<T>();
-		return data;
+		return response;
 	}
 
-	public async patch<T>(url: Input, options?: Options): Promise<T> {
-		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.#queue.enqueue({
-				id: window.crypto.randomUUID(),
-				method: "PATCH",
-				url,
-				options,
-				resolve,
-				reject,
-			});
-		});
+	public async patch(url: Input, options?: Options): Promise<KyResponse> {
+		const response = await this.enqueue("PATCH", url, options);
 
-		const data = await response.json<T>();
-		return data;
+		return response;
 	}
 
-	public async delete<T>(url: Input, options?: Options): Promise<T> {
-		const response = await new Promise<KyResponse>((resolve, reject) => {
-			this.#queue.enqueue({
-				id: window.crypto.randomUUID(),
-				method: "DELETE",
-				url,
-				options,
-				resolve,
-				reject,
-			});
-		});
+	public async delete(url: Input, options?: Options): Promise<KyResponse> {
+		const response = await this.enqueue("DELETE", url, options);
 
-		const data = await response.json<T>();
-		return data;
+		return response;
 	}
 
 	public request(url: Input, options?: Options): Promise<KyResponse> {
 		const method = requestMethodSchema.parse(options?.method);
 
+		return this.enqueue(method, url, options);
+	}
+
+	private enqueue(method: RequestMethod, url: Input, options?: Options): Promise<KyResponse> {
 		return new Promise((resolve, reject) => {
 			this.#queue.enqueue({
-				id: window.crypto.randomUUID(),
+				id: randomUUID(),
 				method,
 				url,
 				options,
 				resolve,
 				reject,
 			});
-		});
+		})
 	}
 
-	private async errorHook(error: HTTPError): Promise<HTTPError> {
-		if (error.response.status !== 401) {
-			return error;
-		}
-
-		if (this.storage.refreshToken == null) {
-			return error;
-		}
-
-		const id = error.request.headers.get("x-request-id");
+	private async responseHook(request: Request, options: NormalizedOptions, response: Response): Promise<Response | void> {
+		const id = request.headers.get("x-request-id");
 
 		if (id == null) {
-			return error;
+			return response;
 		}
 
 		const item = this.requestMap.get(id);
 
 		if (item == null) {
-			return error;
+			return response;
+		}
+
+		this.requestMap.delete(id);
+
+		if (response.status !== 401) {
+			return response;
+		}
+
+		if (this.storage.refreshToken == null) {
+			return response;
 		}
 
 		this.status = "stopped";
 		await this.refreshToken();
-		this.#queue.enqueue(item);
 		this.status = "idle";
+		// hijack the request and swap it with a new one
+		const result = await this.enqueue(item.method, item.url, item.options)
 
-		return error;
+		return result;
 	}
-
 
 	private async run() {
 		while (!this.#queue.isEmpty()) {
@@ -226,7 +184,7 @@ export class HttpClient {
 		void this.run();
 	}
 
-	private executeRequest(item: HttpClientQueueItem) {
+	private async executeRequest(item: HttpClientQueueItem) {
 		const {id, method, options, url} = item;
 
 		const initialHeaders = this.getAuthHeaders();
@@ -246,19 +204,31 @@ export class HttpClient {
 		const headers = this.constructHeaders(this.getAuthHeaders());
 
 		const response = await this.api.post(url, {
-			headers
+			headers,
+			throwHttpErrors: false,
 		});
 
 		if (!response.ok) {
-			console.log("logout");
-			this.storage.accessToken = null;
-			this.storage.refreshToken = null;
+			await this.logout();
 			return;
 		}
 
 		const data = await response.json<RefreshTokenResponse>();
 
 		this.storage.accessToken = data.token;
+	}
+
+	private async logout(): Promise<void> {
+		const url = "authentication/logout";
+		const headers = this.constructHeaders(this.getAuthHeaders());
+
+		await this.api.post(url, {
+			headers,
+			throwHttpErrors: false,
+		});
+
+		this.storage.accessToken = null;
+		this.storage.refreshToken = null;
 	}
 
 	private constructHeaders(headersInit?: HeadersInit, kyHeadersInit?: HeadersInit | Record<string, string | undefined>) {
