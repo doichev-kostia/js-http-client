@@ -228,7 +228,7 @@ describe("HttpClient", () => {
 
 		const client = new HttpClient(storage, clientOptions);
 
-		expect(client.get("users/me")).rejects.toThrowError();
+		await expect(client.get("users/me")).rejects.toThrowError();
 	});
 
 });
