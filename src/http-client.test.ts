@@ -263,6 +263,9 @@ describe("HttpClient", () => {
 		await expect(client.get("users/me")).rejects.toThrowError();
 
 		expect(await promise).toBe(true);
+
+		expect(storage.accessToken).toBe(null);
+		expect(storage.refreshToken).toBe(null);
 	});
 
 });
