@@ -1,10 +1,3 @@
-// async queue ✅
-// refresh and access token ✅
-// logging
-// error enrichment
-// request cancellation + if the response from the refresh endpoint is 401, then cancel all requests with auth token
-
-
 import ky, { KyResponse, type NormalizedOptions, type Options } from "ky";
 import { milliseconds, REFRESH_TOKEN_HEADER } from "./constants.js";
 import { Queue, QueueAction } from "./queue.js";

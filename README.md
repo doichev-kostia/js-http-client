@@ -18,3 +18,10 @@ store the data.
 ## Requirements
 
 - JWT token should contain `exp` claim
+
+## TODO
+- queue ✅
+- refresh and access token ✅
+- logging
+- error enrichment
+- testing ✅ 
