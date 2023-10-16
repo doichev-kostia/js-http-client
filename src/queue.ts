@@ -3,23 +3,28 @@ class QueueNode<T> {
 	}
 }
 
-type ActionType = "push" | "pop" | "clear";
+export type QueueEvent = "enqueue" | "dequeue" | "clear";
 
-
-export type QueueAction<D> = {
-	type: ActionType;
-	data: D | null;
+type ListenerMap<T> = {
+	"enqueue": Set<(data: T) => void>;
+	"dequeue": Set<(data: T) => void>;
+	"clear": Set<() => void>;
 }
 
 export class Queue<T> {
 	private cursor: number;
 	private head: QueueNode<T> | null;
 	private tail: QueueNode<T> | null;
-	private subscribers = new Set<(action: QueueAction<T>) => void>();
+	private listeners: ListenerMap<T>;
 
 	constructor() {
 		this.head = this.tail = null;
 		this.cursor = 0;
+		this.listeners = {
+			enqueue: new Set<(data: T) => void>(),
+			dequeue: new Set<(data: T) => void>(),
+			clear: new Set<() => void>(),
+		}
 	}
 
 	public enqueue(data: T): void {
@@ -33,10 +38,7 @@ export class Queue<T> {
 			this.tail = node;
 		}
 
-		this.subscribers.forEach(callback => callback({
-			type: "push",
-			data: data,
-		}));
+		this.emit("enqueue", data);
 	}
 
 	public dequeue(): T | null {
@@ -56,11 +58,7 @@ export class Queue<T> {
 
 		const data = node.data;
 
-		this.subscribers.forEach(callback => callback({
-			type: "pop",
-			data: data,
-		}));
-
+		this.emit("dequeue", data);
 		return data;
 	}
 
@@ -80,18 +78,26 @@ export class Queue<T> {
 		this.head = null;
 		this.tail = null;
 		this.cursor = 0;
-		this.subscribers.forEach(callback => callback({
-			type: "clear",
-			data: null,
-		}));
+		this.emit("clear", null);
 	}
 
-	public subscribe(callback: (action: QueueAction<T>) => void): () => void {
-		this.subscribers.add(callback);
-		return () => this.unsubscribe(callback);
+	public off(event: QueueEvent, callback: (...args: any[]) => any): void {
+		this.listeners[event].delete(callback);
 	}
 
-	private unsubscribe(callback: (action: QueueAction<T>) => void) {
-		this.subscribers.delete(callback);
+	public on(event: "dequeue", callback: (data: T) => void): () => void;
+	public on(event: "enqueue", callback: (data: T) => void): () => void;
+	public on(event: "clear", callback: () => void): () => void;
+
+	public on(event: QueueEvent, callback: (...args: any[]) => any): () => void {
+		this.listeners[event].add(callback as any);
+		return () => this.off(event, callback);
+	}
+
+	private emit(event: "dequeue", data: T): void;
+	private emit(event: "enqueue", data: T): void;
+	private emit(event: "clear", data: null): void;
+	private emit(event: QueueEvent, data: any): void {
+		this.listeners[event].forEach(callback => callback(data));
 	}
 }

@@ -1,6 +1,6 @@
 import ky, { KyResponse, type NormalizedOptions, type Options } from "ky";
 import { milliseconds, REFRESH_TOKEN_HEADER } from "./constants.js";
-import { Queue, QueueAction } from "./queue.js";
+import { Queue, QueueEvent } from "./queue.js";
 import { RefreshTokenResponse } from "./tests/contracts.js";
 import { z } from "zod";
 import { randomUUID } from "./crypto.js";
@@ -50,7 +50,7 @@ export class HttpClient {
 			},
 			...options,
 		});
-		this.#queue.subscribe(this.subscriber.bind(this));
+		this.#queue.on("enqueue", this.subscriber.bind(this));
 	}
 
 	public get status() {
@@ -64,8 +64,8 @@ export class HttpClient {
 		}
 	}
 
-	public subscribeToQueue(callback: (action: QueueAction<HttpClientQueueItem>) => void): () => void {
-		return this.#queue.subscribe(callback);
+	public subscribeToQueue(event: QueueEvent, callback: (data: HttpClientQueueItem) => void): () => void {
+		return this.#queue.on(event as any, callback);
 	}
 
 	public async get(url: Input, options?: Options): Promise<KyResponse> {
@@ -168,8 +168,8 @@ export class HttpClient {
 		this.status = "idle";
 	}
 
-	private subscriber(action: QueueAction<HttpClientQueueItem>) {
-		if (this.status !== "idle" || action.type !== "push") {
+	private subscriber() {
+		if (this.status !== "idle") {
 			return;
 		}
 

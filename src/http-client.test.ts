@@ -141,12 +141,8 @@ describe("HttpClient", () => {
 			);
 		});
 
-		client.subscribeToQueue((action) => {
-			if (action.type !== "pop") {
-				return;
-			}
-
-			const headers = action.data?.options?.headers;
+		client.subscribeToQueue("dequeue", (queueItem) => {
+			const headers = queueItem?.options?.headers;
 
 			if (headers == null || Array.isArray(headers)) {
 				throw new Error("Invalid headers");
